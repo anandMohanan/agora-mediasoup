@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaSoup Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .video-container {
+            display: flex;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .video-section {
+            flex: 1;
+        }
+        video {
+            width: 100%;
+            max-width: 400px;
+            height: 300px;
+            background: #000;
+            border-radius: 8px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        h2 {
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 5px;
+        }
+        .logs {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MediaSoup Test Client</h1>
+        <div id="status" class="status">Disconnected</div>
+        
+        <div class="controls">
+            <button id="connectBtn">Connect to Server</button>
+            <button id="startProducingBtn" disabled>Start Producing (Camera)</button>
+            <button id="startConsumingBtn" disabled>Start Consuming</button>
+            <button id="stopBtn" disabled>Stop All</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="video-container">
+            <div class="video-section">
+                <h2>Local Video (Producer)</h2>
+                <video id="localVideo" autoplay muted playsinline></video>
+            </div>
+            <div class="video-section">
+                <h2>Remote Video (Consumer)</h2>
+                <video id="remoteVideo" autoplay playsinline></video>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Logs</h2>
+        <div id="logs" class="logs"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://unpkg.com/mediasoup-client@3.7.6/lib/mediasoup-client.umd.js"></script>
+    <script>
+        class MediaSoupTestClient {
+            constructor() {
+                this.socket = null;
+                this.device = null;
+                this.producerTransport = null;
+                this.consumerTransport = null;
+                this.producer = null;
+                this.consumer = null;
+                this.localStream = null;
+                
+                this.setupEventListeners();
+            }
+
+            log(message) {
+                const logs = document.getElementById('logs');
+                const timestamp = new Date().toLocaleTimeString();
+                logs.innerHTML += `[${timestamp}] ${message}<br>`;
+                logs.scrollTop = logs.scrollHeight;
+                console.log(message);
+            }
+
+            updateStatus(message, type = 'info') {
+                const status = document.getElementById('status');
+                status.textContent = message;
+                status.className = `status ${type}`;
+            }
+
+            setupEventListeners() {
+                document.getElementById('connectBtn').onclick = () => this.connect();
+                document.getElementById('startProducingBtn').onclick = () => this.startProducing();
+                document.getElementById('startConsumingBtn').onclick = () => this.startConsuming();
+                document.getElementById('stopBtn').onclick = () => this.stop();
+            }
+
+            async connect() {
+                try {
+                    this.updateStatus('Connecting...', 'info');
+                    this.log('Connecting to MediaSoup server...');
+
+                    // Check if mediasoup-client is loaded
+                    if (typeof mediasoupClient === 'undefined') {
+                        this.log('ERROR: mediasoup-client not loaded');
+                        this.updateStatus('MediaSoup client not loaded', 'error');
+                        return;
+                    }
+
+                    // Connect to socket
+                    this.socket = io('http://localhost:3000');
+
+                    this.socket.on('connect', async () => {
+                        this.log('Socket connected');
+                        
+                        try {
+                            // Create mediasoup device
+                            this.device = new mediasoupClient.Device();
+                            this.log('MediaSoup device created');
+
+                            // Get router RTP capabilities
+                            this.socket.emit('getRouterRtpCapabilities', async (routerRtpCapabilities) => {
+                                try {
+                                    this.log('Received router RTP capabilities');
+                                    await this.device.load({ routerRtpCapabilities });
+                                    this.log('Device loaded with RTP capabilities');
+                                    
+                                    this.updateStatus('Connected & Ready', 'connected');
+                                    
+                                    // Enable buttons
+                                    document.getElementById('startProducingBtn').disabled = false;
+                                    document.getElementById('startConsumingBtn').disabled = false;
+                                    document.getElementById('stopBtn').disabled = false;
+                                    
+                                } catch (error) {
+                                    this.log(`Error loading device: ${error.message}`);
+                                    console.error('Device load error:', error);
+                                    this.updateStatus('Error loading device', 'error');
+                                }
+                            });
+                        } catch (error) {
+                            this.log(`Error creating device: ${error.message}`);
+                            console.error('Device creation error:', error);
+                            this.updateStatus('Error creating device', 'error');
+                        }
+                    });
+
+                    this.socket.on('disconnect', () => {
+                        this.log('Socket disconnected');
+                        this.updateStatus('Disconnected', 'error');
+                        this.disableButtons();
+                    });
+
+                    this.socket.on('connect_error', (error) => {
+                        this.log(`Connection error: ${error.message}`);
+                        this.updateStatus('Connection failed', 'error');
+                    });
+
+                    this.socket.on('newProducer', ({ producerId }) => {
+                        this.log(`New producer available: ${producerId}`);
+                    });
+
+                } catch (error) {
+                    this.log(`Connection error: ${error.message}`);
+                    console.error('Connection error:', error);
+                    this.updateStatus('Connection failed', 'error');
+                }
+            }
+
+            disableButtons() {
+                document.getElementById('startProducingBtn').disabled = true;
+                document.getElementById('startConsumingBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = true;
+            }
+
+            async startProducing() {
+                try {
+                    this.log('Starting to produce...');
+                    
+                    // Get user media
+                    this.localStream = await navigator.mediaDevices.getUserMedia({
+                        video: { 
+                            width: { ideal: 640 }, 
+                            height: { ideal: 480 },
+                            frameRate: { ideal: 30 }
+                        },
+                        audio: true
+                    });
+
+                    document.getElementById('localVideo').srcObject = this.localStream;
+                    this.log('Got local media stream');
+
+                    // Create producer transport
+                    this.socket.emit('createProducerTransport', async (response) => {
+                        if (response.error) {
+                            this.log(`Error creating producer transport: ${response.error}`);
+                            return;
+                        }
+
+                        try {
+                            this.producerTransport = this.device.createSendTransport(response.params);
+                            this.log('Producer transport created');
+
+                            this.producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                                try {
+                                    this.log('Producer transport connecting...');
+                                    this.socket.emit('connectProducerTransport', { dtlsParameters }, (response) => {
+                                        if (response && response.error) {
+                                            errback(new Error(response.error));
+                                        } else {
+                                            this.log('Producer transport connected');
+                                            callback();
+                                        }
+                                    });
+                                } catch (error) {
+                                    errback(error);
+                                }
+                            });
+
+                            this.producerTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+                                try {
+                                    this.log(`Producing ${kind}...`);
+                                    this.socket.emit('produce', { kind, rtpParameters }, (response) => {
+                                        if (response.error) {
+                                            errback(new Error(response.error));
+                                        } else {
+                                            this.log(`${kind} producer created with ID: ${response.id}`);
+                                            callback({ id: response.id });
+                                        }
+                                    });
+                                } catch (error) {
+                                    errback(error);
+                                }
+                            });
+
+                            // Produce video
+                            const videoTrack = this.localStream.getVideoTracks()[0];
+                            if (videoTrack) {
+                                this.producer = await this.producerTransport.produce({
+                                    track: videoTrack,
+                                    codecOptions: {
+                                        videoGoogleStartBitrate: 1000
+                                    }
+                                });
+                                this.log(`Video producer started: ${this.producer.id}`);
+                            }
+
+                        } catch (error) {
+                            this.log(`Error setting up producer transport: ${error.message}`);
+                            console.error('Producer transport error:', error);
+                        }
+                    });
+
+                } catch (error) {
+                    this.log(`Error starting production: ${error.message}`);
+                    console.error('Production error:', error);
+                }
+            }
+
+            async startConsuming() {
+                try {
+                    this.log('Starting to consume...');
+
+                    // Create consumer transport
+                    this.socket.emit('createConsumerTransport', async (response) => {
+                        if (response.error) {
+                            this.log(`Error creating consumer transport: ${response.error}`);
+                            return;
+                        }
+
+                        try {
+                            this.consumerTransport = this.device.createRecvTransport(response.params);
+                            this.log('Consumer transport created');
+
+                            this.consumerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                                try {
+                                    this.log('Consumer transport connecting...');
+                                    this.socket.emit('connectConsumerTransport', { dtlsParameters }, (response) => {
+                                        if (response && response.error) {
+                                            errback(new Error(response.error));
+                                        } else {
+                                            this.log('Consumer transport connected');
+                                            callback();
+                                        }
+                                    });
+                                } catch (error) {
+                                    errback(error);
+                                }
+                            });
+
+                            // Start consuming
+                            this.socket.emit('consume', { 
+                                rtpCapabilities: this.device.rtpCapabilities 
+                            }, async (response) => {
+                                if (response.error) {
+                                    this.log(`Error consuming: ${response.error}`);
+                                    return;
+                                }
+
+                                try {
+                                    this.consumer = await this.consumerTransport.consume(response.params);
+                                    this.log(`Consumer created: ${this.consumer.id}`);
+
+                                    const remoteVideo = document.getElementById('remoteVideo');
+                                    remoteVideo.srcObject = new MediaStream([this.consumer.track]);
+
+                                    this.socket.emit('resumeConsumer', (response) => {
+                                        if (response && response.error) {
+                                            this.log(`Error resuming consumer: ${response.error}`);
+                                        } else {
+                                            this.log('Consumer resumed - should see video now!');
+                                        }
+                                    });
+
+                                } catch (error) {
+                                    this.log(`Error setting up consumer: ${error.message}`);
+                                    console.error('Consumer setup error:', error);
+                                }
+                            });
+
+                        } catch (error) {
+                            this.log(`Error setting up consumer transport: ${error.message}`);
+                            console.error('Consumer transport error:', error);
+                        }
+                    });
+
+                } catch (error) {
+                    this.log(`Error starting consumption: ${error.message}`);
+                    console.error('Consumption error:', error);
+                }
+            }
+
+            stop() {
+                this.log('Stopping all streams...');
+                
+                if (this.localStream) {
+                    this.localStream.getTracks().forEach(track => track.stop());
+                    this.localStream = null;
+                }
+
+                if (this.producer) {
+                    this.producer.close();
+                    this.producer = null;
+                }
+
+                if (this.consumer) {
+                    this.consumer.close();
+                    this.consumer = null;
+                }
+
+                if (this.producerTransport) {
+                    this.producerTransport.close();
+                    this.producerTransport = null;
+                }
+
+                if (this.consumerTransport) {
+                    this.consumerTransport.close();
+                    this.consumerTransport = null;
+                }
+
+                document.getElementById('localVideo').srcObject = null;
+                document.getElementById('remoteVideo').srcObject = null;
+
+                this.updateStatus('Stopped', 'info');
+                this.log('All streams stopped');
+            }
+        }
+
+        // Wait for page to load, then initialize
+        window.addEventListener('load', () => {
+            // Check if required libraries are loaded
+            if (typeof io === 'undefined') {
+                console.error('Socket.IO not loaded');
+                document.getElementById('status').textContent = 'Socket.IO not loaded';
+                return;
+            }
+            
+            if (typeof mediasoupClient === 'undefined') {
+                console.error('MediaSoup client not loaded');
+                document.getElementById('status').textContent = 'MediaSoup client not loaded';
+                return;
+            }
+
+            console.log('All libraries loaded, initializing test client...');
+            const testClient = new MediaSoupTestClient();
+        });
+    </script>
+</body>
+</html>
